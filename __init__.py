@@ -71,19 +71,24 @@ class MpcPlayer(CommonPlaySkill):
         self.regexes = {}
         self.ducking = False
         self.last_played_type = None
+        self.spoken_name="MPD Player"
 
     def initialize(self):
         #add handler for non existing MPD server
         super().initialize()
+        self.add_event('recognizer_loop:record_begin',
+                       self.handle_listener_started)
+        self.add_event('recognizer_loop:record_end',
+                       self.handle_listener_ended)
         self.add_event('mycroft.audio.service.next', self.next_track)
         self.add_event('mycroft.audio.service.prev', self.prev_track)
         self.add_event('mycroft.audio.service.pause', self.pause)
         self.add_event('mycroft.audio.service.resume', self.resume)
-        #
-        #add keep alive
+        self.create_intents()
+        self.log.info("MPD player skill initialized")
         #should handle not connecting, but for now ok
         self.MPDconnect()
-        self.schedule_repeating_event(self.keep_alive, None, 20, name="MPD Keep Alive")
+        self.schedule_repeating_event(self.keep_alive, None, 10, name="MPD Keep Alive")
 
     def keep_alive(self):
         self.client.status()
@@ -96,34 +101,39 @@ class MpcPlayer(CommonPlaySkill):
         TODO: Evaluate the Idle check logic
         """
         if (self.client.status()['state'] == 'play' and
-                self.settings.get('use_ducking', False)):
-            self.__pause()
+                self.settings.get('use_ducking', True)):
+            self.pause()
             self.ducking = True
 
             # Start idle check
-            self.idle_count = 0
-            self.cancel_scheduled_event('IdleCheck')
-            self.schedule_repeating_event(self.check_for_idle, None,
-                                          1, name='IdleCheck')
-
-    def check_for_idle(self):
-        """Repeating event checking for end of auto ducking."""
-        if not self.ducking:
-            self.cancel_scheduled_event('IdleCheck')
-            return
-
-        active = self.enclosure.display_manager.get_active()
-        if not active == '' or active == 'MPC-Player-Skill':
-            # No activity, start to fall asleep
-            self.idle_count += 1
-
-            if self.idle_count >= 5:
-                # Resume playback after 5 seconds of being idle
-                self.cancel_scheduled_event('IdleCheck')
-                self.ducking = False
-                self.resume()
-        else:
-            self.idle_count = 0
+            # self.idle_count = 0
+            # self.cancel_scheduled_event('IdleCheck')
+            # self.schedule_repeating_event(self.check_for_idle, None,
+            #                  1, name='IdleCheck')
+    def handle_listener_ended(self, message):
+        if (self.client.status()['state'] == 'pause' and
+                self.settings.get('use_ducking', True)): #by default always use ducking
+            self.resume(message)
+            self.ducking = True
+    # #rewrute to handle listener ended
+    # def check_for_idle(self):
+    #     """Repeating event checking for end of auto ducking."""
+    #     if not self.ducking:
+    #         self.cancel_scheduled_event('IdleCheck')
+    #         return
+    #
+    #     active = self.enclosure.display_manager.get_active()
+    #     if not active == '' or active == 'MPC-Player-Skill':
+    #         # No activity, start to fall asleep
+    #         self.idle_count += 1
+    #
+    #         if self.idle_count >= 5:
+    #             # Resume playback after 5 seconds of being idle
+    #             self.cancel_scheduled_event('IdleCheck')
+    #             self.ducking = False
+    #             self.resume()
+    #     else:
+    #         self.idle_count = 0
 
     ######################################################################
         ######################################################################
@@ -189,7 +199,8 @@ class MpcPlayer(CommonPlaySkill):
             path = self.find_resource(regex+'.regex')
             with open(path) as f:
                 string = f.read().strip()
-            self.regexes[regex] = string
+                self.regexes[regex] = string
+            self.log.info("Added regex " + string + " for " + regex)
         return self.regexes[regex]
 
     def CPS_match_query_phrase(self, phrase):
@@ -199,19 +210,24 @@ class MpcPlayer(CommonPlaySkill):
         :return:
         """
         #should check whether MPD available
-
+        # if "iron man" in phrase.lower():
+        #     self.log.info("MPD found")
+        #     return phrase, CPSMatchLevel.EXACT, {'data': 'Iron Man', 'name': 'Iron Man', 'type': 'playlist'}
         mpd_specified = 'mpd' in phrase
         bonus = 0.1 if mpd_specified else 0.0
         #replaces
         phrase = re.sub(self.translate_regex('on_mpd'), "", phrase, re.IGNORECASE)
         confidence, data = self.continue_playback(phrase, bonus)
+        self.log.info("MPD check: " + phrase)
         if not data:
+            self.log.info("MPD check for specific query")
             confidence, data = self.specific_query(phrase, bonus)
-            # if not data:
-            #     confidence, data = self.generic_query(phrase, bonus)
+            if not data:
+                self.log.info("MPD check for generic Query")
+                confidence, data = self.generic_query(phrase, bonus)
 
         if data:
-            self.log.info('Spotify confidence: {}'.format(confidence))
+            self.log.info('MPD confidence: {}'.format(confidence))
             self.log.info('              data: {}'.format(data))
 
             if data.get('type') in ['album', 'artist',
@@ -228,7 +244,7 @@ class MpcPlayer(CommonPlaySkill):
                         level = CPSMatchLevel.GENERIC
                     else:
                         level = CPSMatchLevel.TITLE
-                    phrase += ' on spotify'
+                    phrase += ' on mpd'
             elif data.get('type') == 'continue':
                 if mpd_specified > 0:
                     # "resume playback on spotify"
@@ -236,15 +252,15 @@ class MpcPlayer(CommonPlaySkill):
                 else:
                     # "resume playback"
                     level = CPSMatchLevel.GENERIC
-                    phrase += ' on spotify'
+                    phrase += ' on mpd'
             else:
-                self.log.warning('Unexpected spotify type: '
+                self.log.warning('Unexpected mpd type: '
                                  '{}'.format(data.get('type')))
                 level = CPSMatchLevel.GENERIC
 
             return phrase, level, data
         else:
-            self.log.debug('Couldn\'t find anything to play on Spotify')
+            self.log.debug('Couldn\'t find anything to play on mpd')
 
     def continue_playback(self, phrase, bonus):
         if phrase.strip() == 'mpd':
@@ -273,7 +289,7 @@ class MpcPlayer(CommonPlaySkill):
         match = re.match(self.translate_regex('playlist'), phrase,
                          re.IGNORECASE)
         if match:
-            conf, data =  self.query_playlist(match.groupdict()['playlist'])
+            conf, data = self.query_playlist(match.groupdict()['playlist'])
             if conf > 0.7:
                 return conf, data
             else:
@@ -381,7 +397,7 @@ class MpcPlayer(CommonPlaySkill):
         """
             Try to find song
         :param self:
-        :param phrase:
+        :param song:
         :return:
         """
         data = None
@@ -400,6 +416,7 @@ class MpcPlayer(CommonPlaySkill):
             key, confidence = match_one(song, titles)
             key = titles.index(key)
             #song data is dict containing file uri
+            self.log.info("MPD Song: " + song + " matched to" + key + "with conf " + str(confidence))
             return confidence + bonus, {'data': data[key], 'name': None, 'type': 'track'}
         else:
             return NOTHING_FOUND
@@ -411,14 +428,18 @@ class MpcPlayer(CommonPlaySkill):
         :param phrase:
         :return:
         """
-        playlists = self.client.listplaylist()
+        playlists = self.client.listplaylists()
         if len(playlists) > 0:
+            #names of all playlists
             play = [v['playlist'] for v in playlists]
-            key, conf = match_one(phrase.lower(), play)
-            key = play.index(play)
+
+            key, confidence = match_one(phrase.lower(), play)
+            self.log.info("MPD Playlist: " + phrase + " matched to " + key + " with conf" + str(confidence))
+            #key = play.index(key)
             playlistdata = self.client.listplaylistinfo(key)
+
             data = {'data': playlistdata[0], 'name': key, 'type': 'playlist'}
-            return conf, data
+            return confidence, data
 
         return NOTHING_FOUND
 
@@ -447,8 +468,9 @@ class MpcPlayer(CommonPlaySkill):
             # key = artist.index(key)
             # artistdata = self.client.search('artist'.key)
             #album returns album name as data
-            data = {'data': key, 'name': key, 'type': 'artist'}
-            return confidence, {'data': data, 'name': None, 'type': 'artist'}
+            self.log.info("MPD Album: " + album + " matched to " + key + " with conf " + str(confidence))
+            data = {'data': key, 'name': key, 'type': 'album'}
+            return confidence, data
         else:
             return NOTHING_FOUND
             # Also check with parentheses removed for example
@@ -464,10 +486,11 @@ class MpcPlayer(CommonPlaySkill):
         bonus += 0.1
         artists = self.client.list('artist')
         if len(artists) > 0:
+            #list of artists
             artists = [a['artist'] for a in artists]
-            key, confidence = match_one(artist.lower(), artist)
-            #key = artist.index(key)
+            key, confidence = match_one(artist.lower(), artists)
             confidence = min(confidence+bonus, 1.0)
+            self.log.info("MPD Artist: " + artist + " matched to " + key + " with conf " + str(confidence))
             #artistdata = self.client.search('artist'.key)
             data = {'data': key, 'name': key, 'type': 'artist'}
             return confidence, data
@@ -487,7 +510,8 @@ class MpcPlayer(CommonPlaySkill):
         """
         try:
             self.MPDconnect()
-
+            #disable seems to give out a stop signal
+            self.enable_playing_intents()
             if data['type'] == 'continue':
                 self.acknowledge()
                 self.continue_current_playlist()
@@ -496,9 +520,11 @@ class MpcPlayer(CommonPlaySkill):
                                      data['data'])
             else:  # artist, album track
                 self.log.info('playing {}'.format(data['type']))
+                self.log.info('by {}'.format(data['name']))
                 self.play(data=data['data'], data_type=data['type'], name=data['name'])
-
-            self.enable_playing_intents()
+            #might have error
+            #self.log.info("MPD started playback")
+            #self.log.info("MPD post playing intents")
             if data.get('type') and data['type'] != 'continue':
                 self.last_played_type = data['type']
                 self.is_playing = True
@@ -531,6 +557,12 @@ class MpcPlayer(CommonPlaySkill):
         self.disable_intent('WhatAlbum.intent')
         self.disable_intent('WhatArtist.intent')
         self.disable_intent('StopMusic.intent')
+
+    def handle_stop(self):
+        if self.client:
+            self.client.clear()
+        else:
+            self.failed()
 
     def shuffle(self):
         """ Turn on shuffling """
@@ -565,7 +597,8 @@ class MpcPlayer(CommonPlaySkill):
         # if authorized and playback was started by the skill
         if self.client:
             self.log.info('Pausing MPD')
-            self.client.pause(self.dev_id)
+            if self.client.status()['state'] != 'pause':
+                self.client.pause()
 
     def pause(self, message=None):
         """ Handler for playback control pause. """
@@ -576,7 +609,7 @@ class MpcPlayer(CommonPlaySkill):
         """ Handler for playback control resume. """
         if self.client:
             self.log.info('Resume MPD')
-            self.spotify_play(self.dev_id)
+            self.client.play()
 
     def next_track(self, message):
         """ Handler for playback control next. """
@@ -602,6 +635,7 @@ class MpcPlayer(CommonPlaySkill):
         try:
             self.client.connect(host=host, port = port)
         except ConnectionError:
+            self.log.error("Already connected")
             pass
 
     def start_playlist_playback(self, name="", data=None):
@@ -636,6 +670,13 @@ class MpcPlayer(CommonPlaySkill):
         except Exception as e:
             self.log.error("Unable to obtain name, artist or"
                            " URI information while asked to play: " + str(e))
+
+    def continue_current_playlist(self):
+        pass
+
+    def failed(self):
+        pass
+
 
 def create_skill():
     return MpcPlayer()
