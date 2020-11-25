@@ -330,13 +330,12 @@ class MpcPlayer(CommonPlaySkill):
                     results.append((conf, data))
                 #Check for Track
                 self.log.info('Checking tracks')
-                titles = self.client.list('title')
-                if len(titles) > 0:
-                    titles = [t['title'] for t in titles]
-                    key, conf = match_one(phrase.lower(), titles)
+                if len(self.songs) > 0:
+                    key, conf = match_one(phrase.lower(), self.songs)
                     #key = titles.index(key)
+                    self.log.info("Matched with " + key + " at " + conf)
                     track_data = self.client.search('title', key)
-                    data = {'data':track_data[0], 'name': None, 'type': 'track'}
+                    data = {'data':track_data[0], 'name': key, 'type': 'track'}
                 if conf and conf > DIRECT_RESPONSE_CONFIDENCE:
                     return conf, data
                 elif conf and conf > MATCH_CONFIDENCE:
@@ -349,7 +348,6 @@ class MpcPlayer(CommonPlaySkill):
                     return conf, data
                 elif conf and conf > MATCH_CONFIDENCE:
                     results.append((conf, data))
-
                 if len(results) == 0:
                     return NOTHING_FOUND
                 else:
