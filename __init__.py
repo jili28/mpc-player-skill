@@ -390,7 +390,6 @@ class MpcPlayer(CommonPlaySkill):
         :param song:
         :return:
         """
-        data = None
         by_word = ' {} '.format(self.translate('by'))
         if len(song.split(by_word)) > 1:
             song, artist = song.split(by_word)
@@ -405,11 +404,7 @@ class MpcPlayer(CommonPlaySkill):
                 return NOTHING_FOUND
         else:
             song_search = song
-        #data = self.client.search(type="title", query=song_search)
-        if data and len(data) > 0:
-            #find best match
-            #still to be refined
-            #lower case ok
+        if self.songs and len(self.songs) > 0:
             key, confidence = match_one(song, self.songs)
             return confidence + bonus, {'data': self.client.search('title', key)[0], 'name': key, 'type': 'track'}
         else:
@@ -422,8 +417,7 @@ class MpcPlayer(CommonPlaySkill):
         :param phrase:
         :return:
         """
-        playlists = self.client.listplaylists()
-        if len(playlists) > 0:
+        if len(self.playlists) > 0:
             #names of all playlists
             #have to watch out for lower case matching
             key, confidence = match_one(phrase.lower(), self.playlists)
@@ -599,7 +593,7 @@ class MpcPlayer(CommonPlaySkill):
 
     def pause(self, message=None):
         """ Handler for playback control pause. """
-        self.ducking = False
+        #self.ducking = False
         self.__pause()
 
     def resume(self, message=None):
@@ -613,7 +607,10 @@ class MpcPlayer(CommonPlaySkill):
         # if authorized and playback was started by the skill
         if self.client:
             self.log.info('Next MPD track')
-            self.client.next()
+            try:
+                self.client.next()
+            except Exception:
+                self.log.error("MPC Protocol Error")
             self.start_monitor()
             return True
         return False
@@ -623,7 +620,10 @@ class MpcPlayer(CommonPlaySkill):
         # if authorized and playback was started by the skill
         if self.client:
             self.log.info('Previous MPD track')
-            self.client.prev()
+            try:
+                self.client.prev()
+            except Exception:
+                self.log.error("MPC Protocol Error")
             self.start_monitor()
 
     def MPDstatus(self):
