@@ -1,7 +1,7 @@
 
 
 import re
-from mycroft.skills.core import intent_handler
+from mycroft.skills.core import intent_handler, intent_file_handler
 from mycroft.util.parse import match_one, fuzzy_match
 from mycroft.messagebus import Message
 from requests import HTTPError
@@ -70,6 +70,11 @@ class MpcPlayer(CommonPlaySkill):
         self.client = MPDClient()
         self.regexes = {}
         self.ducking = False
+        #better cache lists
+        self.artist = []
+        self.albums = []
+        self.songs  = []
+        self.playlists = []
         self.last_played_type = None
         self.spoken_name="MPD Player"
 
@@ -88,6 +93,12 @@ class MpcPlayer(CommonPlaySkill):
         self.log.info("MPD player skill initialized")
         #should handle not connecting, but for now ok
         self.MPDconnect()
+        self.artist =  [a['artist'].lower() for a in self.client.list('artist')]
+        self.albums =  [a['album'].lower() for a in self.client.list('album')]
+        #have to check for best matching version
+        #maybe use metaphone
+        self.songs  =  [t['title'] for t in self.client.list('title')]
+        self.playlists = [p['playlist'] for p in self.client.listplaylists()]
         self.schedule_repeating_event(self.keep_alive, None, 10, name="MPD Keep Alive")
 
     def keep_alive(self):
@@ -110,30 +121,12 @@ class MpcPlayer(CommonPlaySkill):
             # self.cancel_scheduled_event('IdleCheck')
             # self.schedule_repeating_event(self.check_for_idle, None,
             #                  1, name='IdleCheck')
+
     def handle_listener_ended(self, message):
         if (self.client.status()['state'] == 'pause' and
                 self.settings.get('use_ducking', True)): #by default always use ducking
             self.resume(message)
             self.ducking = True
-    # #rewrute to handle listener ended
-    # def check_for_idle(self):
-    #     """Repeating event checking for end of auto ducking."""
-    #     if not self.ducking:
-    #         self.cancel_scheduled_event('IdleCheck')
-    #         return
-    #
-    #     active = self.enclosure.display_manager.get_active()
-    #     if not active == '' or active == 'MPC-Player-Skill':
-    #         # No activity, start to fall asleep
-    #         self.idle_count += 1
-    #
-    #         if self.idle_count >= 5:
-    #             # Resume playback after 5 seconds of being idle
-    #             self.cancel_scheduled_event('IdleCheck')
-    #             self.ducking = False
-    #             self.resume()
-    #     else:
-    #         self.idle_count = 0
 
     ######################################################################
         ######################################################################
@@ -147,13 +140,13 @@ class MpcPlayer(CommonPlaySkill):
         # Schedule a new one every 5 seconds to monitor/update display
         self.schedule_repeating_event(self._update_display,
                                       None, 5,
-                                      name='MonitorSpotify')
+                                      name='MonitorMPD')
         self.add_event('recognizer_loop:record_begin',
                        self.handle_listener_started)
 
     def stop_monitor(self):
         # Clear any existing event
-        self.cancel_scheduled_event('MonitorSpotify')
+        self.cancel_scheduled_event('MonitorMPD')
 
     def _update_display(self, message):
         # Checks once a second for feedback
@@ -179,20 +172,13 @@ class MpcPlayer(CommonPlaySkill):
         try:
             image = self.client.albumart(status['file']) # might be uri
         except Exception:
+            #This will be changed to any random image written in config file
             image = ''
-
-        self.CPS_send_status(artist=artist, track=track, image=image)
-
-        # # Mark-1
-        # if artist and track:
-        #     text = '{}: {}'.format(artist, track)
-        # else:
-        #     text = ''
-        #
-        # # Update the "Now Playing" display if needed
-        # if text != self.mouth_text:
-        #     self.mouth_text = text
-        #     self.enclosure.mouth_text(text)
+        try:
+            album = status['album']
+        except Exception:
+            album = ''
+        self.CPS_send_status(artist=artist, track=track, image=image, album=album)
 
     def translate_regex(self, regex):
         if regex not in self.regexes:
@@ -209,6 +195,7 @@ class MpcPlayer(CommonPlaySkill):
         :param phrase input phrase of user
         :return:
         """
+        #pasue
         #should check whether MPD available
         # if "iron man" in phrase.lower():
         #     self.log.info("MPD found")
@@ -228,7 +215,7 @@ class MpcPlayer(CommonPlaySkill):
 
         if data:
             self.log.info('MPD confidence: {}'.format(confidence))
-            self.log.info('              data: {}'.format(data))
+            #self.log.info('              data: {}'.format(data))
 
             if data.get('type') in ['album', 'artist',
                                     'track', 'playlist']:
@@ -238,7 +225,6 @@ class MpcPlayer(CommonPlaySkill):
                 else:
                     if confidence > 0.9:
                         # TODO: After 19.02 scoring change
-                        # level = CPSMatchLevel.MULTI_KEY
                         level = CPSMatchLevel.TITLE
                     elif confidence < 0.5:
                         level = CPSMatchLevel.GENERIC
@@ -261,17 +247,9 @@ class MpcPlayer(CommonPlaySkill):
             return phrase, level, data
         else:
             self.log.debug('Couldn\'t find anything to play on mpd')
+            return
 
-    def continue_playback(self, phrase, bonus):
-        if phrase.strip() == 'mpd':
-            return (1.0,
-                    {
-                            'data': None,
-                            'name': None,
-                            'type': 'continue'
-                    })
-        else:
-            return NOTHING_FOUND
+
 
     def specific_query(self, phrase, bonus):
         """
@@ -393,6 +371,18 @@ class MpcPlayer(CommonPlaySkill):
     #         self.audio_service = AudioService(self.bus)
     #         self.audio_service.play(songs, message.data['utterance']
 
+    def query_genre(selfs, genre: str, bonus = 0.0):
+        """
+
+        :param genre:
+        :param bonus:
+        :return:
+        """
+        key, confidence = match_one(genre, self.genres)
+        if confidence > 0.7:
+            return confidence, {'data':{'genre': key}, 'name':key, 'type': 'genre'}
+        else:
+            return NOTHING_FOUND
     def query_song(self, song: str, bonus=0.0):
         """
             Try to find song
@@ -404,20 +394,24 @@ class MpcPlayer(CommonPlaySkill):
         by_word = ' {} '.format(self.translate('by'))
         if len(song.split(by_word)) > 1:
             song, artist = song.split(by_word)
-            song_search = song
-            #song_search = '*{}* artist:{}'.format(song, artist)
+            self.log.info("Using search by artist")
+            confidence, data = self.query_artist(artist)
+            if confidence > 0.6:
+                songs = self.client.search('artist', data['data'])
+                #songtitles = [t['title'].lower() for t in songs]
+                key, confidence = match_one(song, songs)
+                return confidence + 0.1, {'data': {'title': key, 'artist': data['data']}, 'name': key, 'type': 'track'}
+            else:
+                return NOTHING_FOUND
         else:
             song_search = song
-        data = self.client.search(type="title", query=song_search)
+        #data = self.client.search(type="title", query=song_search)
         if data and len(data) > 0:
             #find best match
             #still to be refined
-            titles = [ d['title'] for d in data]
-            key, confidence = match_one(song, titles)
-            key = titles.index(key)
-            #song data is dict containing file uri
-            self.log.info("MPD Song: " + song + " matched to" + key + "with conf " + str(confidence))
-            return confidence + bonus, {'data': data[key], 'name': None, 'type': 'track'}
+            #lower case ok
+            key, confidence = match_one(song, self.songs)
+            return confidence + bonus, {'data': self.client.search('title', key)[0], 'name': key, 'type': 'track'}
         else:
             return NOTHING_FOUND
 
@@ -431,9 +425,8 @@ class MpcPlayer(CommonPlaySkill):
         playlists = self.client.listplaylists()
         if len(playlists) > 0:
             #names of all playlists
-            play = [v['playlist'] for v in playlists]
-
-            key, confidence = match_one(phrase.lower(), play)
+            #have to watch out for lower case matching
+            key, confidence = match_one(phrase.lower(), self.playlists)
             self.log.info("MPD Playlist: " + phrase + " matched to " + key + " with conf" + str(confidence))
             #key = play.index(key)
             playlistdata = self.client.listplaylistinfo(key)
@@ -457,19 +450,16 @@ class MpcPlayer(CommonPlaySkill):
         if len(album.split(by_word)) > 1:
             album, artist = album.split(by_word)
             album_search = album
-            #album_search = '*{}* artist:{}'.format(album, artist)
-            #bonus += 0.1
         else:
             album_search = album
         albums = self.client.list('album')
         if len(albums) > 0:
-            albumlist = [a['album'] for a in albums]
-            key, confidence = match_one(album.lower(), albumlist)
-            # key = artist.index(key)
-            # artistdata = self.client.search('artist'.key)
+            #albumlist = [a['album'].lower() for a in albums]
+            key, confidence = match_one(album.lower(), self.albums)
             #album returns album name as data
             self.log.info("MPD Album: " + album + " matched to " + key + " with conf " + str(confidence))
-            data = {'data': key, 'name': key, 'type': 'album'}
+            #not the best tactic
+            data = {'data': self.client.search('album', key)[0], 'name': key, 'type': 'album'}
             return confidence, data
         else:
             return NOTHING_FOUND
@@ -487,8 +477,9 @@ class MpcPlayer(CommonPlaySkill):
         artists = self.client.list('artist')
         if len(artists) > 0:
             #list of artists
-            artists = [a['artist'] for a in artists]
-            key, confidence = match_one(artist.lower(), artists)
+            #lower ok because we use searchadd
+            #artists = [a['artist'].lower() for a in artists]
+            key, confidence = match_one(artist.lower(), self.artist)
             confidence = min(confidence+bonus, 1.0)
             self.log.info("MPD Artist: " + artist + " matched to " + key + " with conf " + str(confidence))
             #artistdata = self.client.search('artist'.key)
@@ -511,7 +502,7 @@ class MpcPlayer(CommonPlaySkill):
         try:
             self.MPDconnect()
             #disable seems to give out a stop signal
-            self.enable_playing_intents()
+            #self.enable_playing_intents()
             if data['type'] == 'continue':
                 self.acknowledge()
                 self.continue_current_playlist()
@@ -519,12 +510,7 @@ class MpcPlayer(CommonPlaySkill):
                 self.start_playlist_playback(data['name'],
                                      data['data'])
             else:  # artist, album track
-                self.log.info('playing {}'.format(data['type']))
-                self.log.info('by {}'.format(data['name']))
                 self.play(data=data['data'], data_type=data['type'], name=data['name'])
-            #might have error
-            #self.log.info("MPD started playback")
-            #self.log.info("MPD post playing intents")
             if data.get('type') and data['type'] != 'continue':
                 self.last_played_type = data['type']
                 self.is_playing = True
@@ -538,13 +524,14 @@ class MpcPlayer(CommonPlaySkill):
         #                           .require('For')
         # self.register_intent(intent, self.search_spotify)
         self.register_intent_file('ShuffleOn.intent', self.shuffle)
+        self.enable_intent('ShuffleOn.intent')
         #self.register_intent_file('ShuffleOff.intent', self.shuffle)
         self.register_intent_file('WhatSong.intent', self.song_info)
         self.register_intent_file('WhatAlbum.intent', self.album_info)
         self.register_intent_file('WhatArtist.intent', self.artist_info)
         self.register_intent_file('StopMusic.intent', self.handle_stop)
-        time.sleep(0.5)
-        self.disable_playing_intents()
+        #time.sleep(0.5)
+        #self.disable_playing_intents()
 
     def enable_playing_intents(self):
         self.enable_intent('WhatSong.intent')
@@ -571,27 +558,37 @@ class MpcPlayer(CommonPlaySkill):
         else:
             self.failed()
 
+    #@intent_file_handler("WhatSong.intent")
     def song_info(self, message):
         """ Speak song info. """
-        status = self.client.currentsong() if self.client else None
-        song, artist = status['title'], status['artist']
-        self.speak_dialog('CurrentSong', {'song': song, 'artist': artist})
+        if self.client.status()['state'] != 'play':
+            self.speak_dialog('NothingPlaying')
+        else:
+            status = self.client.currentsong() if self.client else None
+            song, artist = status['title'], status['artist']
+            self.speak_dialog('CurrentSong', {'song': song, 'artist': artist})
 
     def album_info(self, message):
         """ Speak album info. """
-        status = self.client.currentsong() if self.client else None
-        album = status['album']
-        if self.last_played_type == 'album':
-            self.speak_dialog('CurrentAlbum', {'album': album})
+        if self.client.status()['state'] != 'play':
+            self.speak_dialog('NothingPlaying')
         else:
-            self.speak_dialog('OnAlbum', {'album': album})
+            status = self.client.currentsong() if self.client else None
+            album = status['album']
+            if self.last_played_type == 'album':
+                self.speak_dialog('CurrentAlbum', {'album': album})
+            else:
+                self.speak_dialog('OnAlbum', {'album': album})
 
     def artist_info(self, message):
         """ Speak artist info. """
-        status = self.client.currentsong() if self.client else None
-        if status:
-            artist = status['artist']
-            self.speak_dialog('CurrentArtist', {'artist': artist})
+        if self.client.status()['state'] != 'play':
+            self.speak_dialog('NothingPlaying')
+        else:
+            status = self.client.currentsong() if self.client else None
+            if status:
+                artist = status['artist']
+                self.speak_dialog('CurrentArtist', {'artist': artist})
 
     def __pause(self):
         # if authorized and playback was started by the skill
@@ -645,6 +642,7 @@ class MpcPlayer(CommonPlaySkill):
             self.client.clear()
             self.client.load(name)
             self.client.play()
+            self.start_monitor()
         else:
             self.log.info('No playlist found')
             raise PlaylistNotFoundError
@@ -654,16 +652,23 @@ class MpcPlayer(CommonPlaySkill):
             if data_type == 'track':
                 song, artist, uri = data['title'], data['artist'], data['file']
                 self.client.clear()
-                self.client.add(uri)
+                self.speak_dialog('ListeningToSongBy', data={'tracks': song, 'artist': artist})
+                self.client.searchadd('title', song)
                 self.client.play()
+                self.start_monitor()
             elif data_type == 'album':
+                album, artist =  data['album'], data['artist']
                 self.client.clear()
-                self.client.searchadd('album', name)
+                self.speak_dialog('ListeningToAlbumBy', data={'album': album, 'artist': artist})
+                self.client.searchadd('album', album)
                 self.client.play()
+                self.start_monitor()
             elif data_type == 'artist':
                 self.client.clear()
+                self.speak_dialog('ListeningToArtist', {'artist': name})
                 self.client.searchadd('artist', name)
                 self.client.play()
+                self.start_monitor()
             else:
                 self.log.error("wrong data_type")
                 raise ValueError("Invalid Type")
@@ -676,6 +681,17 @@ class MpcPlayer(CommonPlaySkill):
 
     def failed(self):
         pass
+
+    def continue_playback(self, phrase, bonus):
+        if phrase.strip() == 'mpd':
+            return (1.0,
+                    {
+                        'data': None,
+                        'name': None,
+                        'type': 'continue'
+                    })
+        else:
+            return NOTHING_FOUND
 
 
 def create_skill():
