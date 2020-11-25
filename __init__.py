@@ -102,6 +102,7 @@ class MpcPlayer(CommonPlaySkill):
         self.schedule_repeating_event(self.keep_alive, None, 10, name="MPD Keep Alive")
 
     def keep_alive(self):
+        self.MPDconnect()
         self.client.status()
     ######################################################################
     # Handle auto ducking when listener is started.
