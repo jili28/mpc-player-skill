@@ -34,7 +34,7 @@ MANAGED_PLATFORMS = ['mycroft_mark_1', 'mycroft_mark_2pi']
 NOTHING_FOUND = (None, 0.0)
 
 # Confidence levels for generic play handling
-DIRECT_RESPONSE_CONFIDENCE = 0.8
+DIRECT_RESPONSE_CONFIDENCE = 0.9
 
 MATCH_CONFIDENCE = 0.5
 
@@ -268,6 +268,7 @@ class MpcPlayer(CommonPlaySkill):
         match = re.match(self.translate_regex('playlist'), phrase,
                          re.IGNORECASE)
         if match:
+            self.log.info("Checking specific playlist")
             conf, data = self.query_playlist(match.groupdict()['playlist'])
             if conf > 0.7:
                 return conf, data
@@ -278,6 +279,7 @@ class MpcPlayer(CommonPlaySkill):
         match = re.match(self.translate_regex('album'), phrase,
                          re.IGNORECASE)
         if match:
+            self.log.info("Checking specific Album")
             bonus += 0.1
             album = match.groupdict()['album']
             return self.query_album(album, bonus)
@@ -286,11 +288,13 @@ class MpcPlayer(CommonPlaySkill):
         match = re.match(self.translate_regex('artist'), phrase,
                          re.IGNORECASE)
         if match:
+            self.log.info("Checking specific artist")
             artist = match.groupdict()['artist']
             return self.query_artist(artist, bonus)
         match = re.match(self.translate_regex('song'), phrase,
                          re.IGNORECASE)
         if match:
+            self.log.info("Checking specific track")
             song = match.groupdict()['track']
             return self.query_song(song, bonus)
 
@@ -303,6 +307,7 @@ class MpcPlayer(CommonPlaySkill):
                 - As a user playlist
                 - As an album
                 - As a track
+                maybe cut out the direct responses
                 Arguments:
                     phrase (str): Text to match against
                     bonus (float): Any existing match bonus
@@ -333,7 +338,7 @@ class MpcPlayer(CommonPlaySkill):
                 if len(self.songs) > 0:
                     key, conf = match_one(phrase.lower(), self.songs)
                     #key = titles.index(key)
-                    self.log.info("Matched with " + key + " at " + conf)
+                    self.log.info("Matched with " + key + " at " + str(conf))
                     track_data = self.client.search('title', key)
                     data = {'data':track_data[0], 'name': key, 'type': 'track'}
                 if conf and conf > DIRECT_RESPONSE_CONFIDENCE:
@@ -370,18 +375,20 @@ class MpcPlayer(CommonPlaySkill):
     #         self.audio_service = AudioService(self.bus)
     #         self.audio_service.play(songs, message.data['utterance']
 
-    def query_genre(selfs, genre: str, bonus = 0.0):
+    def query_genre(self, genre: str, bonus = 0.0):
         """
 
         :param genre:
         :param bonus:
         :return:
         """
-        key, confidence = match_one(genre, self.genres)
+        key, confidence = match_one(genre, self.genre)
         if confidence > 0.7:
-            return confidence, {'data':{'genre': key}, 'name':key, 'type': 'genre'}
+            return confidence, {'data': {'genre': key}, 'name':key, 'type': 'genre'}
         else:
             return NOTHING_FOUND
+
+
     def query_song(self, song: str, bonus=0.0):
         """
             Try to find song
@@ -493,6 +500,7 @@ class MpcPlayer(CommonPlaySkill):
         :return:
         """
         try:
+
             self.MPDconnect()
             #disable seems to give out a stop signal
             #self.enable_playing_intents()
